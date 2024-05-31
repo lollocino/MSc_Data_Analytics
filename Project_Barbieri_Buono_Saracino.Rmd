@@ -1,0 +1,531 @@
+---
+title: 'Applied project 3: MCMC algorithms'
+author: "The Avengers"
+date: "Matteo Barbieri - Biagio Buono - Lorenzo Saracino"
+output:
+  pdf_document:
+    toc: yes
+    latex_engine: pdflatex
+header-includes:
+  \usepackage{upgreek}
+  \usepackage{amsmath}
+  \usepackage{amssymb}
+  \usepackage{cancel}
+---
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(rmarkdown)
+library(tinytex)
+library(knitr)
+library(rstanarm)
+library(Rcpp)
+library(effects) 
+library(bookdown)
+library(xtable)
+library(car)
+library(faraway)
+library(leaps)
+library(ROCR)
+library(corrplot)
+library(ggplot2)
+library(magrittr)
+library(kableExtra)
+library(patchwork)
+library(superheat)
+library(VGAM)
+library(gridExtra)
+library(nptest)
+library(latex2exp)
+library(boot)
+library(corrplot)
+library(gplots)
+library(heatmaply)
+library(reshape2)
+library(MASS)
+library(mixtools)
+```
+
+# Introduction
+
+During classes we have typically generated $iid$ samples directly from the density of interest $f$ or indirectly in the case of importance sampling. However, Monte Carlo methods have some drawbacks, which are discussed in detail in the following sections. Therefore, we introduce Markov Chain Monte Carlo methods and we will particularly discuss the Metropolis-Hastings algorithm and its adaptive version.
+
+The MH algorithm generates *correlated* samples from a Markov chain, which carries some convergence properties that can be exploited to provide easier proposals in cases where generic Monte Carlo methods do not readily apply. Furthermore, this Markov perspective leads to efficient decompositions of high-dimensional problems in a sequence of smaller problems that are much easier to solve.
+
+Section 1 contains a brief description of the Markov chain and its properties, as well as an explanation of the operating principle of the MCMC. Section 2, instead, focuses on the Metropolis-Hastings algorithm, also providing a comparison with its basic counterpart. Finally, in Section 3 we present a detailed illustration of the Adaptive Metropolis algorithm as a stochastic process and we provide results from test simulations that prove the ergodic properties of the algorithm.
+
+# 1. Markov Chain Monte Carlo
+
+Markov Chain Monte Carlo methods are a class of computational algorithms used to sample from complex and high-dimensional probability distributions when direct sampling is not feasible. Before delving into the functioning of these algorithms, let us recall the basic concepts of Markov chains.
+
+A Markov Chain $\{X_{t}\}$ is a sequence of dependent random variables $X_0, X_1, X_2, …, X_t,...$ where the probability distribution of $X_{t}$, given the previous variables, relies only on $X_{t-1}$:
+
+$$
+P(X_{t+1} \in A | X_0, \ldots, X_t) = P(X_{t+1} \in A | X_t)
+$$
+
+where $A$ represents the state space of the chain.
+
+This conditional probability of Markov chains is characterized by a transition kernel, that is a probability function $K$ that determines the transition from one state of the chain to the next one; that is:
+
+$$
+X_{t+1} | X_0, X_1, X_2 \ldots, X_t \sim K(X_{t} | X_{t+1})
+$$
+
+For the most part, the Markov chains encountered in Markov chain Monte Carlo settings enjoy a very strong stability property. Indeed, a stationary probability distribution exists by construction for those chains, such that if $X_t \sim \pi$, then $X_{t+1} \sim \pi$.
+
+The existence of a stationary distribution, also known as *stationarity*, is closely related to three properties of the Markov chains: *irreducibility*, *aperiodicity* and *Harris recurrence*.
+
+An irreducible Markov chain is characterized by the property that every state has a non-zero probability of being reached from any other state within a finite number of steps. In other words, there are no isolated subsets of states that are completely disconnected from one another. This condition guarantees that the Markov chain does not get stuck or trapped within any particular subset of states.
+
+A Markov chain is said to be aperiodic if there is no fixed pattern or period in the transitions of the chain. Aperiodicity prevents the chain from getting stuck in repetitive patterns and guarantees that the chain does not have any deterministic cycle.
+
+Finally, a Markov chain is Harris recurrent if, starting from any state, there is a non-zero probability of returning to that state infinitely often in the future. This condition guarantees long-term stability and that states are revisited frequently.
+
+For recurrent chains, the stationary distribution holds the additional significance of being a limiting distribution. In other words, as the chain progresses, the distribution of $X_t$ converges to $\pi$ for almost any initial value $X_0$. This property, known as *ergodicity*, establishes that if a kernel $K$ generates an ergodic Markov chain with a stationary distribution $\pi$, simulations from $K$ will eventually yield samples from $\pi$.This means that the long-term average of a random process converges to its expected value:
+
+$$
+\frac{1}{T}\sum{q(X_t)} \rightarrow \int q(x)\pi(x) \ dx = E_{\pi}(q(X)), \ T \rightarrow \infty
+$$
+
+which means that the Law of Large Numbers that lies at the basis of Monte Carlo methods can also be applied in MCMC settings. As the number of iterations increases, the distribution of the Markov chain converges to the target distribution, allowing for accurate estimation of quantities of interest.
+
+The MCMC sampling strategy is to construct an irreducible and aperiodic Markov chain $\{X_t\}$ such that the initial samples $X_{1}, X_{2}, ...$ may not exactly follow the target distribution $\pi(x)$ (known as the *burn-in* period); once the chain reaches a sample $X_B$ that settles into a stationary distribution, all subsequent samples are regarded as samples from $\pi(x)$. Therefore, we discard the initial samples as they are no longer necessary and we obtain a chain whose stationary distribution of the generated samples is exactly the target distribution $\pi(x)$.
+
+# 2. Metropolis Hastings
+
+### 2.1 Metropolis-Hastings and its properties
+
+Metropolis-Hastings algorithm belongs to the class of MCMC algorithms used to approximate integrals, to sample from a distribution which is very difficult to sample from and in Bayesian statistics to approximate posterior distributions.
+
+Markov Chain is at the base of Metropolis-Hastings. Given a target density $\pi(x)$, we build a Markov kernel $K$ with stationary distribution $\pi(x)$ and then generate a Markov chain $\{X_t\}$ using this kernel so that the limiting distribution of $\{X_t\}$ is $\pi(x)$. Metropolis-Hastings method helps to derive such kernels which is difficult to derive.
+
+The target distribution $\pi(x)$ can be rewritten as $\frac{f(x)}{NC}$, where $NC$ is an unknown normalizing constant independent of x and difficult to integrate. Then, the target is associated with the conditional distribution $f(x)$, such that $\pi(x)\ \alpha \ f(x)$, which is easier to simulate from and has enough dispersion to concentrate on the exploration of the entire support of $\pi(x)$
+
+The Metropolis-Hastings algorithm samples from an easier distribution $q(x)$ called *proposal*, whose one of the requirements is to have the same domain of the target distribution. This means that it must be able to generate all the values belonging to the support of the target distribution. If the proposal distribution never generates a value $X_{t}$ to which the target distribution assigns a positive probability, then certainly the stationary distribution of the chain cannot be equal to the target distribution.
+
+The proposal function $q(X_{t+1}|X_{t})$, which must follow the regular conditions of irreducibility, aperiodicity and recurrency already explained in section 1, depends on the current sample and it is updated after each iteration, collecting some information from the previous sample (i.e., the mean). This procedure differs from the rejection sampling procedure, where all the samples at each iteration are proposed from a distribution independently one to each other, without bringing any information from the previous to the following sample. If irreducibility and aperiodicity conditions are satisfied, then the chain generated by the Metropolis-Hastings algorithm has a unique limiting stationary distribution.
+
+When the proposal distribution is symmetric so that $q(X_{t+1}|X_{t})$ = $q(X_{t}|X_{t+1})$, this method is known as Metropolis algorithm.
+
+### 2.2 The algorithm explanation
+
+The algorithm could be summarized in the following points:
+
+a)  Choose an initial candidate $X_{0}$;
+
+b)  Propose the next candidate $X_{1}$ from the proposal distribution $q(X_{1}|X_{0})$;
+
+c)  Accept or reject the next candidate given a certain acceptance probability;
+
+d)  Update the Markov Chain adding the new candidate if we accept it or just carry the previous state if we reject the new proposal;
+
+e)  As the number of iterations progresses, the algorithm reaches the stationary distribution that converges to the target distribution $\pi(x)$ (Ergodic theorem);
+
+f)  Remove the burn-in period that does not follow the target distribution and plot the samples' distribution.
+
+The algorithm starts sampling an initial value $X_{0}$, afterwards it is proposed a new candidate $X_{1}$ sampled from the proposal distribution $q(X_1|X_0)$. This new candidate can be accepted or rejected based on some probability that reflects how likely it is that the candidate to come from the target $\pi(x)$. This selection procedure of candidates is repeated for $t$ times until the algorithm converges to $\pi$.
+
+The acceptance probability must follow a precise condition known as *Detailed Balance Condition*.
+
+This condition assures that if the probability of going from any state $X_{t}$ to $X_{t+1}$ follows the DBC, so $\pi(x)$ will be the stationary distribution of the Markov Chain and this means that MCMC will be sampling from $\pi(x)$, after some burn-in period. For any states $X_t$ and $X_{t+1}$ lying on the support of $\pi(x)$ and for transition probabilities $K(X_{t+1}|X_{t})$:
+
+$$
+\pi(X_t)K(X_{t+1}|X_{t}) = \pi(X_{t+1})K(X_{t}|X_{t+1}), \ \forall x
+$$
+
+Rewriting the condition, it is obtained that:
+
+$$
+\frac{f(X_{t})}{NC} q(X_{t+1}|X_t) \alpha(X_t,X_{t+1}) = \frac{f(X_{t+1})}{NC} q(X_t|X_{t+1}) \alpha(X_{t+1},X_t)
+$$
+
+where $q(X_{t+1}|X_t) \alpha(X_t,X_{t+1})$ is equal to the transition kernel $K(X_{t+1}|X)$ and $q(X_t|x_{t+1}) \alpha(X_{t+1},X_t)$ is equal to the transition kernel $K(X|X_{t+1})$ and $\alpha$ represents the acceptance probability, which will be used to decide whether to accept or reject the candidate.
+
+Making the acceptance probability explicit, the formula could be written as: $$
+\frac{\alpha(X_{t},X_{t+1})}{\alpha(X_{t+1},X_{t})} = \frac{f(X_{t+1})}{f(X_{t})} \cdot  \frac{q(X_{t}|X_{t+1})}{q(X_{t+1}|X_t)} = r_f \cdot r_g
+$$
+
+Where $\frac{f(X_{t+1})}{f(X_{t})}$ is $r_f$ and $\frac{q(X_{t+1}|X_{t})}{q(X_{t}|X_{t+1})}$ is $r_g$ (known as the Hastings ratio), which is equal to 1 when the proposal distribution is a symmetric distribution, for example a normal or a uniform distribution.
+
+Based on this acceptance probability obtained using the detailed balance condition, we can derive the general formula for the standard Metropolis-Hastings algorithm:
+
+Given $X_{t}$
+
+1.  Generate $X_{t+1} \sim q(X_{t+1}|X_t)$
+
+2.  Take
+
+$$
+X_{t+1} = \begin{cases} X_{t+1} \ with \ probability =\ min
+\{  1,\frac {f(X_{t+1})q(X_{t}|X_{t+1})} {f(X_{t})q(X_{t+1}|X_t)} \} \\
+\\ X_{t} \ otherwise  \end{cases}
+$$ When $\frac {f(x_{t+1})q(x_{t}|x_{t+1})} {f(x_{t})q(x_{t+1}|x_t)} \geq 1$, the minimum value is 1 and so there is 100% of probability to accept the candidate $X_{t+1}$, that will be added to the sample set. This happens when we are trying to move from a lower probable state of the target distribution to an higher one. The algorithm always attempts to move towards the area of high probability of the target distribution, because intuitively we need more samples from those high density areas in order to re-create the target distribution.
+
+When $\frac {f(X_{t+1})q(X_{t}|X_{t+1})} {f(X_{t})q(X_{t+1}|X_t)} \leq 1$, the acceptance probability is between 0 and 1. The candidate may or may not be accepted: if $X_{t+1}$ is rejected the next state in the Markov Chain would be the current state $X_{t}$, which will be carried forward. When we move towards lower density areas of the target distribution, the probability of accepting proposed samples is in turn lower. But, even though it is less probable to accept, it is still important to keep some candidates in order to sample from the tails area.
+
+### 2.3 Two variants of the Standard Metropolis-Hastings algorithm
+
+The proposal distribution $q(\cdot)$ may or may not depend on the current iteration value $X_{t}$. The Independent Metropolis-Hastings (IMH) algorithm and the Random Walk Metropolis-Hastings (RWMH) algorithm are two types of the Metropolis-Hastings algorithm that differ in the way they propose candidate samples for acceptance or rejection. They can be useful to improve the sample efficiency or because of a particular structure of the target distribution that can be detected better.
+
+#### 2.3.1 Independent Metropolis-Hastings (IMH)
+
+In the IMH algorithm, each candidate sample is independently drawn from a proposal distribution $q(x)$ that is not influenced by the current state of the Markov chain and that remains the same throughout the entire algorithm.
+
+Given $X_{t}$
+
+1.  Generate $X_{t+1} \sim q(x)$
+
+2.  Take
+
+$$
+X_{t+1} = \begin{cases} X_{t+1} \ with \ probability =\ min
+\{  1,\frac {f(X_{t+1})q(X_{t})} {f(X_{t})q(X_{t+1})} \} \\
+\\ X_{t} \ otherwise  \end{cases}
+$$
+
+In this case, $q(x)$ must be similar to our target distribution $\pi$ to approximate it, suggesting a high acceptance rate. This method appears as a straight forward generalization of the Accept-Reject method in the sense that the proposal distribution is the same density as in the Accept--Reject method, but with some differences:
+
+-   The Accept-Reject sample is i.i.d., while the Metropolis-Hastings sample is not. Although ${X(t)}$ are generated independently, the resulting sample is not i.i.d., only because the probability of acceptance of $X_{t+1}$ depends on $X_{t}$.
+
+-   Furthermore, the IHM sample will involve repeated occurrences of the same value since rejection of $X_{t+1}$ leads to repetition of $X_{t}$ at time $t+1$.
+
+-   Lastly the acceptance method is different The Accept--Reject acceptance step requires the calculation of the upper bound $M \geq sup \frac{f(x)}{q(x)}$, which is not required by the Metropolis-Hastings algorithm.
+
+#### 2.3.2 Random Walk Metropolis Hastings (RWMH)
+
+In the RWMH algorithm, instead, each candidate sample is obtained by perturbing the current state of the Markov chain. That is considered a local exploration of the neighborhood of the current value of the Markov chain and the candidate sample is generated by adding a random perturbation to the current state, making it a random walk behavior.
+
+Let the proposals be generated as:
+
+$X_{t+1} =X_{t} + \epsilon_{t}$
+
+where $\epsilon_{t}$ is a sequence of independent draws from a known probability distribution (e.g., multivariate normal $N(0, \Sigma)$, with zero-mean and covariance matrix $\Sigma$). The proposal distribution is typically a symmetric distribution centered around the current state, such as a multivariate normal distribution with the mean set to the current state, and it has the particular form $q(X_{t+1}|X_{t})$ = $q(X_{t+1}-X_{t})$.
+
+Given $X_{t}$
+
+1\. Generate $X_{t+1} \sim q(X_{t+1}-X_{t})$
+
+2\. Take
+
+$$
+X_{t+1} = \begin{cases} X_{t+1} \ with \ probability =\ min
+\{ 1, \frac {f(X_{t+1})} {f(X_{t})} \} \\
+\\ X_{t} \ otherwise  \end{cases}
+$$
+
+The acceptance probability does not depend on the proposal $q$. This means that, for a given pair $(X_{t}, X_{t+1})$, the probability of acceptance is the same whether $x_{t}$ is generated from a normal or from a Cauchy distribution, for instance.
+
+A high acceptance rate does not necessarily indicate that the algorithm is behaving well since maybe the chain is moving too slowly on the surface of $\pi$ (very small increments of $\epsilon_{t}$). When $X_{t}$ and $X_{t+1}$ are close, in the sense that $f(X_{t})$ and $f(X_{t+1})$ are approximately equal, the random walk Metropolis-Hastings algorithm leads to the acceptance of $X_{t+1}$ with probability: $\min(\frac{f(X_t+1)}{f(X_t)},1)\approx 1$.
+
+Points that are close to each other have similar densities and the proposals are almost always accepted. The resulting MCMC sample is highly serially correlated; a high acceptance rate then indicates that those parts of the domain are not often, or not at all, explored by the Metropolis--Hastings algorithm.
+
+In contrast, if the average acceptance rate is low close to 0, the proposals are often rejected and the chain remains stuck at high-density points for long periods of time; we obtain a highly serially correlated MCMC sample. The successive values of $f(X_{t+1})$ often are small when compared with $f(X_{t})$, which corresponds to the scenario where the random walk moves quickly on the surface of f since it often reaches the "borders" of the support of f.
+
+Calibrating the scale of the increment $\epsilon_{t}$ of the random walk is crucial to achieving a good approximation to the target distribution in a reasonable number of iterations. The question is then to decide on a optimal acceptance rate against which to calibrate random walk Metropolis-Hastings algorithms in order to avoid "too high" as well as "too low" acceptance rates. The adaptive MCMC algorithm tries to solve this problem.
+
+### 2.4 Comparison with basic Monte Carlo
+
+We have studied in class different MC methods; in general, basic Monte Carlo methods generate independent random samples in order to obtain an accurate and reliable estimation of quantities or to solve complex problems for which direct or deterministic analytical methods are not available. However, Monte Carlo sampling is not effective and may be intractable for high-dimensional probabilistic models; instead, MCMC is a valid alternative because it is a more advanced technique that can handle more complex probability distributions, generating correlated sequences of samples from a specified probability distribution.
+
+MCMC is different from basic Monte Carlo in several key aspects:
+
+-   MCMC methods operate with the Markov chain concept, where the probability of moving to the next state depends only on the current state, creating a dependency structure and exploring the target distribution more effectively by focusing on areas of higher probability; on the other hand, the samples produced by basic Monte Carlo methods are independent and drawn from a known distribution.
+
+-   Monte Carlo methods are justified by the law of large numbers, while the ergodic theorem is the main justification for the usage of MCMC methods (see section 1).
+
+-   The convergence rate of basic Monte Carlo depends on the number of independent samples generated. As the number of samples increases, the estimate converges to the true value, and so, the convergence may be slower for high-dimensional problems. Whereas, since MCMC algorithms aim to explore effectively the support of the target distribution, they converge faster to it with respect to Monte Carlo methods. Then, once convergence is achieved, the samples drawn from the chain can be used to estimate various quantities of interest.
+
+-   Basic Monte Carlo methods are easier to implement and require less computational time and less resources than MCMC methods.
+
+```{r echo=FALSE, fig.cap="Distributions of the values obtained with the Metropolis-Hastings algorithm and the Rejection sampling technique.", fig.height=3}
+set.seed(123456)
+
+# Define the target distribution
+target <- function(x) {
+  return(0.5 * dnorm(x, mean = -2, sd = 0.5) + 0.5 * dnorm(x, mean = 2, sd = 1))
+}
+
+# Metropolis-Hastings
+
+n <- 50000
+burn.in <- 10000
+
+X <- matrix(0, nrow = burn.in + n + 1, ncol = 1)
+X[1, ] <- rnorm(1, mean = 0, sd = 1)
+
+for (t in 1:(burn.in + n)) {
+  # Propose a move
+  Y <- rnorm(1, mean = X[t, ], sd = 1)
+  
+  # Calculate acceptance ratio
+  a <- min(1, target(Y) / target(X[t, ]))
+  
+  if (runif(1) < a)
+    X[t + 1, ] <- Y  # Accept
+  else
+    X[t + 1, ] <- X[t, ]  # Reject
+}
+
+res <- X[(burn.in + 1):length(X), ]
+
+par(mfrow = c(1, 2))
+hist(res, probability = TRUE, col = "coral1", border = "white", xlab = "y",
+     main = "Metropolis Hastings", ylim = c(0,0.4), breaks = 50, cex.main = 0.7)
+curve(target(x), add = TRUE, col = "blue", lwd = 1.5)
+
+
+# Rejection sampling
+
+N <- 50000
+a <- max(target(seq(-5, 5, length.out = 1000)))
+x <- seq(-5, 5, length.out = N)
+u <- runif(N)
+keep <- (u <= target(x) / (a * runif(N)))
+y <- x[keep]
+
+hist(y, probability = TRUE, col = "darkslategray2", border = "white", xlab = "y",
+     main = "Rejection Sampling", ylim = c(0,0.4), breaks = 50, cex.main = 0.7)
+curve(target(x), add = TRUE, col = "blue", lwd = 1.5)
+```
+
+A significative example of the differences between Metropolis-Hastings and a basic Monte Carlo method is showed in *figure 1*: in this case the Metropolis-Hastings algorithm is compared with the rejection sampling method and the target distribution is a mixture of two normal distributions, one centered at -2 with a standard deviation of 0.5, and the other centered at 2 with a standard deviation of 1; 50000 random samples are generated and the scaling factor in the rejection sampling code is computed as the maximum value of the target distribution within a suitable range.
+
+The plots highlights clearly that the histogram of the Metropolis-Hastings algorithm resembles in a better way the target distribution, indicating that the samples generated by this algorithm are representative of the true distribution and overall that this MCMC method is more efficient and accurate to sampling from complex distributions, like the mixture of this case.
+
+# 3. Adaptive Markov Chain Monte Carlo
+
+The importance of selecting an effective proposal distribution for the random walk Metropolis algorithm cannot be understated. It is, indeed, generally recognized that choosing the right proposal distribution, encompassing both its size and spatial orientation, and tuning of associated parameters are essential in order to obtain meaningful simulation results within a constrained timeframe. However, this task poses significant challenges since the target distribution is often a complicated high-dimensional distribution that we do not know anything about. One potential remedy to this problem is provided by adaptive algorithms, that use the history of the process to appropriately adjust the proposal distribution and "learn" better parameters values of MCMC algorithms while they run.
+
+### 3.1 Adaptive Metropolis
+
+This section considers a version of the adaptive Metropolis (AM) algorithm of Haario, Saksman, and Tamminen (2001), whose definition is based on the classical random walk Metropolis algorithm (Metropolis *et al.* 1953) and its modification, the AP algorithm, introduced in Haario *et al.* (1999).
+
+Assuming that the target distribution is supported on the subset $S \subset \mathbb{R}^d$ and that at time $t-1$ the already sampled states of the AM chain are $X_0$, $X_1$, ..., $X_{t-1}$, the new proposal distribution for the next candidate point $Y$ is a Gaussian distribution with mean at the current point $X_{t-1}$, and covariance $C_t$. The candidate point $Y$ is then accepted with probability
+
+$$
+\alpha(X_{t-1}, Y) = min(1, \frac{\pi(Y)}{\pi(X_{t-1})})
+$$in which case we set $X_t = Y$, and otherwise $X_t = X_{t-1}$. Although the acceptance probability resembles that one of the Metropolis algorithm, here the choice is not based on the reversibility property, since the stochastic chain is no longer Markovian.
+
+The main difference with respect to the classic Metropolis algorithm is that the covariance of the proposal distribution is calculated using all the previous states and it is crucial determine how it depends on the history of the chain. In the AM algorithm, we select an arbitrary initial covariance $C_0$, according to our best prior knowledge, and then the covariance is updated as follows:
+
+$$
+C_t = s_dcov(X_0, \ldots, X_{t-1})+s_d \epsilon I_d
+$$
+
+where the scaling parameter $s_d$ depends only on the dimension $d$ of the vectors and $\epsilon > 0$ is a constant that we may choose very small compared to the size of S just to ensure that $C_t$ will not become singular, and $I_d$ denotes the $d$-dimensional identity matrix. This means that the covariance $C_t$ satisfies the following recursion formula:
+
+$$
+C_{t+1} = \frac{t-1}{t} C_t + \frac{s_d}{t} (t\bar{X}_{t-1} \bar{X}_{t-1}^T - (t+1) \bar{X}_t \bar{X}_t^T + X_t X_t^T + \epsilon I_d)
+$$
+
+We could assume the scaling parameter to be $s_{d} = (2.38)^2/d$ from Gelman *et al.* (1996), since they have demonstrated that this choice optimizes the mixing properties of the Metropolis search in the case of Gaussian targets and Gaussian proposals. Then we perform a Metropolis algorithm with proposal distribution given at iteration $t$ by $Q_t(X_{t}, \cdot) = N(X_{t-1}, (2.38)^{2}C_{t}/d)$ where $C_t$ is the current empirical estimate of the covariance structure of the target distribution based on the run so far.
+
+### 3.2 Ergodicity of the AM chain
+
+Adaptive Markov Chain Monte Carlo methods have shown to perform well in practical applications, but since the Markov property and stationarity are destroyed by using an adaptive scheme, they do not always converge to the target distribution. For instance, the AP algorithm, where the covariance $C_t$ is calculated from a fixed number of previous states, has the consequence of bringing non-exactness into the simulation. The purpose of this section is to establish that the AM algorithm possesses the necessary ergodic properties, ensuring an accurate simulation of the target distribution.
+
+We have implemented Haario et al. (2001) version of the Adaptive Metropolis to evaluate the algorithm.
+
+In the following example, we demonstrate a run using a target distribution that follows a multivariate Normal distribution with dimensionality $d = 10$, mean 0, and variance 1.For the proposal distribution, we utilize a multivariate normal distribution with an appropriate dimension. The covariance of this distribution is dynamically adjusted based on previous samples and updated using the current knowledge of the target distribution. To start, the proposal is initialized with a mean of 0, while the variance assumes different values to create four distinct scenarios. Additionally, it is essential to incorporate a burn-in period of sufficient length when applying this algorithm. This allows the algorithm to gradually adapt and refine its parameters by exploring the support of the distribution S. Consequently, after a specific number of iterations, the algorithm becomes capable of generating samples that accurately follow the target distribution.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+target <- function(x){
+  mean_vector <- rep(0,10)  # mean vector
+  covariance <- diag(rep(1, 10))  # covariance matrix
+  dmvnorm(x, mu = mean_vector, sigma = covariance)
+}
+
+AM <- function(target, n, X0, C0, burn.in) {
+  
+  # Initialization of variables
+  d <- length(X0)
+  X <- matrix(NA, nrow = n + 1, ncol = d)
+  X[1, ] <- X0
+  C <- C0
+  
+  # Burn in
+  if (burn.in > 0)
+    for(t in 1:burn.in) {
+      # Propose a move
+      Y <- mvrnorm(n = 1, mu = X[t, ], Sigma = C)
+      
+      # Calculate acceptance ratio
+      a <- min(1, target(Y)/target(X[t, ])) 
+      
+      if(runif(1) < a) 
+        X[t+1, ] <- Y # Accept
+      else
+        X[t+1, ] <- X[t, ] # Reject
+      
+      Xbarold <- .colMeans(X[1:t, ], t, d)
+      Xbarnew <- .colMeans(X[seq(1, t+1), ], t+1, d)
+      
+      # Update covariance
+      C <- ((t-1)/t) * C + 
+        (2.4^2)/(d*t) * ((t * Xbarold %*% t(Xbarold))
+                         - ((t + 1) * Xbarnew %*% t(Xbarnew)) 
+                         + (X[t+1, ] %*% t(X[t+1, ]))
+                         + .Machine$double.eps*diag(d))
+    }
+  
+  # Metropolis phase
+  for(t in seq(burn.in, n)) {
+    # Propose a move
+    Y <- mvrnorm(n = 1, mu = X[t, ], Sigma = C)
+    
+    # Calculate acceptance ratio
+    a <- min(1, target(Y)/target(X[t, ])) 
+    
+    if(runif(1) < a)
+      X[t+1, ] <- Y # Accept
+    else
+      X[t+1, ] <- X[t, ] # Reject
+    
+  }
+  return(X)
+}
+```
+
+```{r echo=FALSE, fig.cap="The first coordinates of the AM Markov chain plotted against iteration number for different values of the initial variance on the left. Distributions of the samples obtained with the AM algorithm for different values of the initial covariance on the right.", fig.height=4.3, message=FALSE, warning=FALSE}
+set.seed(348346)
+par(mfrow = c(2,2))
+
+data_10 <- AM(target, 100000, rep(0,10), diag(rep(10,10)), 20000)
+plot(data_10[,1], type = "l", xlab = "Sample", ylab = "Value", main = expression(sigma^{2} == 10))
+abline(v = 20000, col = "darkred", lty = 2)
+
+hist(data_10[20001:100001,1], breaks = 50, freq = FALSE, col = "paleturquoise4",
+     xlab = "First coordinates", main = expression(sigma^{2} == 10))
+curve(dnorm(x, 0, 1), add = TRUE, lwd = 2, col = "darkred")
+
+data_0.01 <- AM(target, 100000, rep(0,10), diag(rep(0.01,10)), 20000)
+plot(data_0.01[,1], type = "l", xlab = "Sample", ylab = "Value", main = expression(sigma^{2} == 0.01))
+abline(v = 20000, col = "darkred", lty = 2)
+
+hist(data_0.01[20001:100001,1], breaks = 50, freq = FALSE, col = "paleturquoise4",
+     xlab = "First coordinates", main = expression(sigma^{2} == 0.01), xlim = c(-4,4))
+curve(dnorm(x, 0, 1), add = TRUE, lwd = 2, col = "darkred")
+```
+
+*Figure 2* represents the trace plots of the samples obtained by running the AM algorithm, which starts with different values of the initial variance. Observe that a higher initial variance value requires more time for the algorithm to adapt, while a lower initial variance value allows for a faster adaptation. By increasing the initial variance, the samples generated during the burn-in phase exhibit greater variation and uncertainty but gradually converge towards the target distribution.
+
+Moreover, Roberts and Rosenthal (2005) proved ergodicity of adaptive MCMC, showing that an adaptive scheme will converge, i.e. $\lim_{t \to \infty} \lvert \Lambda(X_t) - \pi(\cdot) \rvert = 0$ if we adapt less and less as the algorithm proceeds. This means that the difference between the kernels in later states converges to zero. In our example, adaptation is run in the burn-in phase, after which the algorithm actually produces a great Markov chain, since it converges, it is stationary and it is giving really good samples that follow the target distribution, as we can see in the following figure. Normally the burn in samples are discarded due to poor mixing and they can be observed on the left of the red dashed line at sample 20000.
+
+*Figure 2* also plots the distribution of the samples obtained with the algorithm after the burn-in phase, which resembles quite well the target distribution.
+
+Furthermore, it is important to monitor the acceptance rate of the algorithm and make sure it is within optimal range. Accepting almost every time tells you that each time the chain only jumps a very small step (so that the acceptance ratio is close to 1 every time), which will make the algorithm slow in converging to the stationary distribution. On the other hand, if the acceptance rate is very low, then that says that the chain got stuck to just a few locations and it takes hundreds of iterations for it to make one jump. For the Metropolis algorithm, an optimal acceptance rate would be something between 10% and 60%, and in our example it is approximately equal to 44% for all the values of the initial variance.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+target <- function(x) {
+  mean_vector <- rep(0,10)  # mean vector
+  covariance <- diag(rep(1, 10))  # covariance matrix
+  dmvnorm(x, mu = mean_vector, sigma = covariance)
+}
+
+Accept_rate <- function(target, n, X0, C0, burn.in) {
+  
+  # Init variables
+  d <- length(X0)
+  X <- matrix(NA, nrow = n + 1, ncol = d)
+  X[1, ] <- X0
+  C <- C0
+  
+  accept_count <- 0
+  total_proposals <- 0
+  
+  # Vanilla Metropolis phase (Burn in)
+  if (burn.in > 0)
+    for(t in 1:burn.in) {
+      # Propose a move
+      Y <- mvrnorm(n = 1, mu = X[t, ], Sigma = C)
+      
+      # Calculate acceptance ratio
+      a <- min(1, target(Y)/target(X[t, ])) 
+      
+      total_proposals <- total_proposals + 1
+      
+      if(runif(1) < a) {
+        X[t+1, ] <- Y # Accept
+        accept_count <- accept_count + 1
+      } else
+        X[t+1, ] <- X[t, ] # Reject
+      
+      Xbarold <- .colMeans(X[1:t, ], t, d)
+      Xbarnew <- .colMeans(X[seq(1, t+1), ], t+1, d)
+      
+      # Update covariance
+      C <- ((t-1)/t) * C + 
+        (2.4^2)/(d*t) * ((t * Xbarold %*% t(Xbarold))
+                         - ((t + 1) * Xbarnew %*% t(Xbarnew)) 
+                         + (X[t+1, ] %*% t(X[t+1, ]))
+                         + .Machine$double.eps*diag(d))
+    }
+  
+  # Adapted Metropolis phase
+  for(t in seq(burn.in, n)) {
+    # Propose a move
+    Y <- mvrnorm(n = 1, mu = X[t, ], Sigma = C)
+    
+    # Calculate acceptance ratio
+    a <- min(1, target(Y)/target(X[t, ])) 
+    
+    total_proposals <- total_proposals + 1
+    
+    if(runif(1) < a) {
+      X[t+1, ] <- Y # Accept
+      accept_count <- accept_count + 1
+    } else
+      X[t+1, ] <- X[t, ] # Reject
+    
+  }
+  acceptance_rate <- accept_count / total_proposals
+  
+  return(acceptance_rate)
+}
+
+set.seed(348346)
+
+rate_10 <- Accept_rate(target, 100000, rep(0,10), diag(rep(10,10)), 20000)
+rate_0.01 <- Accept_rate(target, 100000, rep(0,10), diag(rep(0.01,10)), 20000)
+
+tab <- data.frame(
+          Column1 = rate_10,
+          Column2 = rate_0.01 
+      )
+
+colnames(tab) <- c("Var = 10", "Var = 0.01")
+kable(tab)
+```
+
+```{r echo=FALSE, fig.cap="Autocorrelation plot on the left. Trace plot and autocorrelation plot after thinning on the right.", warning=FALSE, message=FALSE, fig.height=3.4, fig.width=6}
+par(mfrow = c(1,3))
+
+first_coord_0.01 = data_0.01[,1]
+acf(first_coord_0.01, main = expression(sigma^{2} == 0.01))
+
+first_coord_thinning = first_coord_0.01[seq(1, length(first_coord_0.01), 40)]
+
+plot(first_coord_thinning, type = "l", xlab = "Sample", ylab = "Value",
+     main = expression(sigma^{2} == 0.01))
+acf(first_coord_thinning, main = expression(sigma^{2} == 0.01))
+```
+
+For illustrative purposes, *Figure 3* represents the autocorrelation of the samples obtained using the algorithm with an initial variance value of 0.01.
+
+If the autocorrelation plot exhibits a slow decay in autocorrelation as the lag increases, it indicates a higher level of autocorrelation within the sampled data. Conversely, if the autocorrelation plot demonstrates a rapid decay in autocorrelation for a specific initial variance, it suggests a lower level of autocorrelation within the sampled data.
+
+We can conclude that there is a significant positive correlation among the samples, which aligns with the expected behavior as the algorithm generates a Markov chain.
+
+However, since we would like to obtain independent samples, we can employ the thinning technique on the chain, which involves storing only one draw every T draws.
+
+In practice, when we store only one sample every 40 proposed samples, we observe a substantial reduction in the autocorrelation between the samples, as illustrated in *Figure 3*.
+
+# References
+
+-   Roberts G. O. & Rosenthal J. S. (2009). Examples of Adaptive MCMC. *Journal of Computational and Graphical Statistics*, 18(No. 2), 349-367.
+-   Brooks S. P. (1998). Markov Chain Monte Carlo Method and Its Application. *Journal of the Royal Statistical Society*. *Series D (The Statistician)*, 47(No. 1), 69-100.
+-   Robert C. P. & Casella, G. (2010). *Intrfoducing Monte Carlo Methods with R*. Springer Science+Business Media, LLC. (Chapter 6 - Metropolis-Hastings Algorithms, 167-197).
+-   Haario H., Saksman E. & Tamminen J. (2001). An Adaptive Metropolis Algorithm. *Bernoulli*, 7(No. 2), 223-242.
+-   Robert, C. P., & Casella, G. (2004). Monte Carlo Statistical Methods. *Springer* *Science+Business Media LLC,*
+-   Givens, G. H., & Hoeting, J. A. (2013). Computational Statistics. (Chapter 7 - Markov Chain Monte Carlo, 201-225).
